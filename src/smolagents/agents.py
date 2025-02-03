@@ -225,6 +225,10 @@ class MultiStepAgent:
             messages.extend(memory_step.to_messages(summary_mode=summary_mode))
         return messages
 
+    def visualize(self):
+        """Creates a rich tree visualization of the agent's structure."""
+        self.logger.visualize_agent_tree(self)
+
     def extract_action(self, model_output: str, split_token: str) -> Tuple[str, str]:
         """
         Parse action from the LLM output

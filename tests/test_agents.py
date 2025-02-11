@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from transformers.testing_utils import get_tests_dir
 
 from smolagents.agent_types import AgentImage, AgentText
@@ -301,12 +302,6 @@ print(result)
 
 
 class AgentTests(unittest.TestCase):
-    def test_fake_single_step_code_agent(self):
-        agent = CodeAgent(tools=[PythonInterpreterTool()], model=fake_code_model_single_step)
-        output = agent.run("What is 2 multiplied by 3.6452?", single_step=True)
-        assert isinstance(output, str)
-        assert "7.2904" in output
-
     def test_fake_toolcalling_agent(self):
         agent = ToolCallingAgent(tools=[PythonInterpreterTool()], model=FakeToolCallModel())
         output = agent.run("What is 2 multiplied by 3.6452?")
@@ -475,13 +470,13 @@ class AgentTests(unittest.TestCase):
             model=fake_code_functiondef,
             managed_agents=[managed_agent],
         )
-        assert "You can also give requests to team members." not in managed_agent.system_prompt
-        print("ok1")
+        assert "You can also give tasks to team members." not in managed_agent.system_prompt
         assert "{{managed_agents_descriptions}}" not in managed_agent.system_prompt
-        assert "You can also give requests to team members." in manager_agent.system_prompt
+        assert "You can also give tasks to team members." in manager_agent.system_prompt
 
     def test_code_agent_missing_import_triggers_advice_in_error_log(self):
-        agent = CodeAgent(tools=[], model=fake_code_model_import)
+        # Set explicit verbosity level to 1 to override the default verbosity level of -1 set in CI fixture
+        agent = CodeAgent(tools=[], model=fake_code_model_import, verbosity_level=1)
 
         with agent.logger.console.capture() as capture:
             agent.run("Count to 3")
@@ -490,6 +485,8 @@ class AgentTests(unittest.TestCase):
 
     def test_multiagents(self):
         class FakeModelMultiagentsManagerAgent:
+            model_id = "fake_model"
+
             def __call__(
                 self,
                 messages,
@@ -556,6 +553,8 @@ final_answer("Final report.")
         manager_model = FakeModelMultiagentsManagerAgent()
 
         class FakeModelMultiagentsManagedAgent:
+            model_id = "fake_model"
+
             def __call__(
                 self,
                 messages,
@@ -607,6 +606,9 @@ final_answer("Final report.")
         report = manager_toolcalling_agent.run("Fake question.")
         assert report == "Final report."
 
+        # Test that visualization works
+        manager_code_agent.visualize()
+
     def test_code_nontrivial_final_answer_works(self):
         def fake_code_model_final_answer(messages, stop_sequences=None, grammar=None):
             return ChatMessage(
@@ -627,9 +629,9 @@ nested_answer()
 
     def test_transformers_toolcalling_agent(self):
         @tool
-        def get_weather(location: str, celsius: bool = False) -> str:
+        def weather_api(location: str, celsius: bool = False) -> str:
             """
-            Get weather in the next days at given location.
+            Gets the weather in the next days at given location.
             Secretly this tool does not care about the location, it hates the weather everywhere.
 
             Args:
@@ -644,36 +646,105 @@ nested_answer()
             device_map="auto",
             do_sample=False,
         )
-        agent = ToolCallingAgent(model=model, tools=[get_weather], max_steps=1)
+        agent = ToolCallingAgent(model=model, tools=[weather_api], max_steps=1)
         agent.run("What's the weather in Paris?")
         assert agent.memory.steps[0].task == "What's the weather in Paris?"
-        assert agent.memory.steps[1].tool_calls[0].name == "get_weather"
+        assert agent.memory.steps[1].tool_calls[0].name == "weather_api"
         step_memory_dict = agent.memory.get_succinct_steps()[1]
-        assert step_memory_dict["model_output_message"].tool_calls[0].function.name == "get_weather"
+        assert step_memory_dict["model_output_message"].tool_calls[0].function.name == "weather_api"
         assert step_memory_dict["model_output_message"].raw["completion_kwargs"]["max_new_tokens"] == 100
         assert "model_input_messages" in agent.memory.get_full_steps()[1]
 
+    def test_final_answer_checks(self):
+        def check_always_fails(final_answer, agent_memory):
+            assert False, "Error raised in check"
+
+        agent = CodeAgent(model=fake_code_model, tools=[], final_answer_checks=[check_always_fails])
+        agent.run("Dummy task.")
+        assert "Error raised in check" in str(agent.write_memory_to_messages())
+
 
 class TestMultiStepAgent:
-    def test_planning_step_first_step(self):
+    def test_instantiation_disables_logging_to_terminal(self):
         fake_model = MagicMock()
-        agent = MultiStepAgent(
+        agent = MultiStepAgent(tools=[], model=fake_model)
+        assert agent.logger.level == -1, "logging to terminal should be disabled for testing using a fixture"
+
+    def test_instantiation_with_prompt_templates(self, prompt_templates):
+        agent = MultiStepAgent(tools=[], model=MagicMock(), prompt_templates=prompt_templates)
+        assert agent.prompt_templates == prompt_templates
+        assert agent.prompt_templates["system_prompt"] == "This is a test system prompt."
+        assert "managed_agent" in agent.prompt_templates
+        assert agent.prompt_templates["managed_agent"]["task"] == "Task for {{name}}: {{task}}"
+        assert agent.prompt_templates["managed_agent"]["report"] == "Report for {{name}}: {{final_answer}}"
+
+    def test_step_number(self):
+        fake_model = MagicMock()
+        fake_model.last_input_token_count = 10
+        fake_model.last_output_token_count = 20
+        max_steps = 2
+        agent = MultiStepAgent(tools=[], model=fake_model, max_steps=max_steps)
+        assert hasattr(agent, "step_number"), "step_number attribute should be defined"
+        assert agent.step_number == 0, "step_number should be initialized to 0"
+        agent.run("Test task")
+        assert hasattr(agent, "step_number"), "step_number attribute should be defined"
+        assert agent.step_number == max_steps + 1, "step_number should be max_steps + 1 after run method is called"
+
+    @pytest.mark.parametrize(
+        "step, expected_messages_list",
+        [
+            (
+                1,
+                [
+                    [
+                        {"role": MessageRole.SYSTEM, "content": [{"type": "text", "text": "FACTS_SYSTEM_PROMPT"}]},
+                        {"role": MessageRole.USER, "content": [{"type": "text", "text": "FACTS_USER_PROMPT"}]},
+                    ],
+                    [{"role": MessageRole.USER, "content": [{"type": "text", "text": "PLAN_USER_PROMPT"}]}],
+                ],
+            ),
+            (
+                2,
+                [
+                    [
+                        {
+                            "role": MessageRole.SYSTEM,
+                            "content": [{"type": "text", "text": "FACTS_UPDATE_SYSTEM_PROMPT"}],
+                        },
+                        {"role": MessageRole.USER, "content": [{"type": "text", "text": "FACTS_UPDATE_USER_PROMPT"}]},
+                    ],
+                    [
+                        {
+                            "role": MessageRole.SYSTEM,
+                            "content": [{"type": "text", "text": "PLAN_UPDATE_SYSTEM_PROMPT"}],
+                        },
+                        {"role": MessageRole.USER, "content": [{"type": "text", "text": "PLAN_UPDATE_USER_PROMPT"}]},
+                    ],
+                ],
+            ),
+        ],
+    )
+    def test_planning_step_first_step(self, step, expected_messages_list):
+        fake_model = MagicMock()
+        agent = CodeAgent(
             tools=[],
             model=fake_model,
         )
         task = "Test task"
-        agent.planning_step(task, is_first_step=True, step=0)
+        agent.planning_step(task, is_first_step=(step == 1), step=step)
         assert len(agent.memory.steps) == 1
         planning_step = agent.memory.steps[0]
         assert isinstance(planning_step, PlanningStep)
-        messages = planning_step.model_input_messages
-        assert isinstance(messages, list)
-        assert len(messages) == 2
-        for message in messages:
+        expected_model_input_messages = expected_messages_list[0]
+        model_input_messages = planning_step.model_input_messages
+        assert isinstance(model_input_messages, list)
+        assert len(model_input_messages) == len(expected_model_input_messages)  # 2
+        for message, expected_message in zip(model_input_messages, expected_model_input_messages):
             assert isinstance(message, dict)
             assert "role" in message
             assert "content" in message
             assert isinstance(message["role"], MessageRole)
+            assert message["role"] == expected_message["role"]
             assert isinstance(message["content"], list)
             assert len(message["content"]) == 1
             for content in message["content"]:
@@ -682,19 +753,28 @@ class TestMultiStepAgent:
                 assert "text" in content
         # Test calls to model
         assert len(fake_model.call_args_list) == 2
-        for call_args in fake_model.call_args_list:
+        for call_args, expected_messages in zip(fake_model.call_args_list, expected_messages_list):
             assert len(call_args.args) == 1
             messages = call_args.args[0]
             assert isinstance(messages, list)
-            assert len(messages) == 2
-            for message in messages:
+            assert len(messages) == len(expected_messages)
+            for message, expected_message in zip(messages, expected_messages):
                 assert isinstance(message, dict)
                 assert "role" in message
                 assert "content" in message
                 assert isinstance(message["role"], MessageRole)
+                assert message["role"] == expected_message["role"]
                 assert isinstance(message["content"], list)
                 assert len(message["content"]) == 1
                 for content in message["content"]:
                     assert isinstance(content, dict)
                     assert "type" in content
                     assert "text" in content
+
+
+@pytest.fixture
+def prompt_templates():
+    return {
+        "system_prompt": "This is a test system prompt.",
+        "managed_agent": {"task": "Task for {{name}}: {{task}}", "report": "Report for {{name}}: {{final_answer}}"},
+    }

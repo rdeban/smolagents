@@ -427,6 +427,7 @@ class HfApiModel(Model):
         token: Optional[str] = None,
         timeout: Optional[int] = 120,
         custom_role_conversions: Optional[Dict[str, str]] = None,
+        inference_client_kwargs: Optional[Dict[str, str]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -434,7 +435,7 @@ class HfApiModel(Model):
         self.provider = provider
         if token is None:
             token = os.getenv("HF_TOKEN")
-        self.client = InferenceClient(self.model_id, provider=provider, token=token, timeout=timeout)
+        self.client = InferenceClient(self.model_id, provider=provider, token=token, timeout=timeout, **inference_client_kwargs)
         self.custom_role_conversions = custom_role_conversions
 
     def __call__(

@@ -45,8 +45,7 @@ Here's how it then looks like on the platform:
 First install the required packages. Here we install [Phoenix by Arize AI](https://github.com/Arize-ai/phoenix) because that's a good solution to collect and inspect the logs, but there are other OpenTelemetry-compatible platforms that you could use for this collection & inspection part.
 
 ```shell
-pip install smolagents
-pip install arize-phoenix opentelemetry-sdk opentelemetry-exporter-otlp openinference-instrumentation-smolagents
+pip install 'smolagents[telemetry]'
 ```
 
 Then run the collector in the background.
@@ -55,22 +54,14 @@ Then run the collector in the background.
 python -m phoenix.server.main serve
 ```
 
-Finally, set up `SmolagentsInstrumentor` to trace your agents and send the traces to Phoenix at the endpoint defined below.
+Finally, set up `SmolagentsInstrumentor` to trace your agents and send the traces to Phoenix default endpoint.
 
 ```python
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
+from phoenix.otel import register
 from openinference.instrumentation.smolagents import SmolagentsInstrumentor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
 
-endpoint = "http://0.0.0.0:6006/v1/traces"
-trace_provider = TracerProvider()
-trace_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint)))
-
-SmolagentsInstrumentor().instrument(tracer_provider=trace_provider)
+register()
+SmolagentsInstrumentor().instrument()
 ```
 Then you can run your agents!
 
@@ -106,7 +97,7 @@ You can then navigate to `http://0.0.0.0:6006/projects/` to inspect your run!
 
 <img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/smolagents/inspect_run_phoenix.png">
 
-You can see that the CodeAgent called its managed ToolCallingAgent (by the way, the managed agent could be have been a CodeAgent as well) to ask it to run the web search for the U.S. 2024 growth rate. Then the managed agent returned its report and the manager agent acted upon it to calculate the economy doubling time! Sweet, isn't it?
+You can see that the CodeAgent called its managed ToolCallingAgent (by the way, the managed agent could have been a CodeAgent as well) to ask it to run the web search for the U.S. 2024 growth rate. Then the managed agent returned its report and the manager agent acted upon it to calculate the economy doubling time! Sweet, isn't it?
 
 ## Setting up telemetry with Langfuse
 

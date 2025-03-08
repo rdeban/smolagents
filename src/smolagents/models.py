@@ -24,9 +24,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-from huggingface_hub import InferenceClient
 from huggingface_hub.utils import is_torch_available
-from PIL import Image
 
 from .tools import Tool
 from .utils import _is_package_available, encode_image_base64, make_image_url
@@ -430,6 +428,8 @@ class HfApiModel(Model):
         inference_client_kwargs: Optional[Dict[str, str]] = None,
         **kwargs,
     ):
+        from huggingface_hub import InferenceClient
+
         super().__init__(**kwargs)
         self.model_id = model_id
         self.provider = provider
@@ -712,7 +712,6 @@ class TransformersModel(Model):
         stop_sequences: Optional[List[str]] = None,
         grammar: Optional[str] = None,
         tools_to_call_from: Optional[List[Tool]] = None,
-        images: Optional[List[Image.Image]] = None,
         **kwargs,
     ) -> ChatMessage:
         completion_kwargs = self._prepare_completion_kwargs(
@@ -737,14 +736,12 @@ class TransformersModel(Model):
             completion_kwargs["max_new_tokens"] = max_new_tokens
 
         if hasattr(self, "processor"):
-            images = [Image.open(image) for image in images] if images else None
             prompt_tensor = self.processor.apply_chat_template(
                 messages,
                 tools=[get_tool_json_schema(tool) for tool in tools_to_call_from] if tools_to_call_from else None,
                 return_tensors="pt",
                 tokenize=True,
                 return_dict=True,
-                images=images,
                 add_generation_prompt=True if tools_to_call_from else False,
             )
         else:
@@ -819,13 +816,13 @@ class TransformersModel(Model):
 
 
 class LiteLLMModel(Model):
-    """This model connects to [LiteLLM](https://www.litellm.ai/) as a gateway to hundreds of LLMs.
+    """Model to use [LiteLLM Python SDK](https://docs.litellm.ai/docs/#litellm-python-sdk) to access hundreds of LLMs.
 
     Parameters:
         model_id (`str`):
             The model identifier to use on the server (e.g. "gpt-3.5-turbo").
         api_base (`str`, *optional*):
-            The base URL of the OpenAI-compatible API server.
+            The base URL of the provider API to call the model.
         api_key (`str`, *optional*):
             The API key to use for authentication.
         custom_role_conversions (`dict[str, str]`, *optional*):
